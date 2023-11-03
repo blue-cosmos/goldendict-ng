@@ -12,13 +12,14 @@
 
 #include <QRegularExpression>
 #include <QtConcurrent>
-
+#include "asio.hpp"
 namespace DictServer {
 
 using namespace Dictionary;
-
+using asio::ip::tcp;
 enum {
-  DefaultPort = 2628
+  DefaultPort = 2628,
+  max_length = 1024
 };
 
 namespace {
@@ -375,14 +376,21 @@ void DictServerWordSearchRequest::run()
     return;
   }
 
-  socket = new QTcpSocket;
+  // socket = new QTcpSocket;
 
-  if ( !socket ) {
-    finish();
-    return;
-  }
+  // if ( !socket ) {
+  //   finish();
+  //   return;
+  // }
+  asio::io_context io_context;
 
-  if ( connectToServer( *socket, dict.url, errorString, isCancelled ) ) {
+    tcp::socket s(io_context);
+    tcp::resolver resolver(io_context);
+    asio::connect(s, resolver.resolve(dict.url));
+
+
+  // if ( connectToServer( *socket, dict.url, errorString, isCancelled ) ) 
+  {
     QStringList matchesList;
 
     for ( int ns = 0; ns < dict.strategies.size(); ns++ ) {
@@ -397,7 +405,9 @@ void DictServerWordSearchRequest::run()
 
         QString reply;
 
-        if ( !readLine( *socket, reply, errorString, isCancelled ) )
+        char reply[ max_length ];
+        size_t reply_length = asio::read( s, asio::buffer( reply, max_length ) );
+        if ( reply_length==0 )
           break;
 
         if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
