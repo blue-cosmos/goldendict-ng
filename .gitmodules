@@ -1,3 +1,6 @@
 [submodule "eb"]
 	path = thirdparty/eb
 	url = https://github.com/xiaoyifang/simple-eb.git
+[submodule "thirdparty/asio"]
+	path = thirdparty/asio
+	url = https://github.com/chriskohlhoff/asio.git

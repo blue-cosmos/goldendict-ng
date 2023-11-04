@@ -13,13 +13,14 @@
 #include <QRegularExpression>
 #include <QtConcurrent>
 #include "asio.hpp"
+using asio::ip::tcp;
+
 namespace DictServer {
 
 using namespace Dictionary;
-using asio::ip::tcp;
 enum {
   DefaultPort = 2628,
-  max_length = 1024
+  max_length  = 1024
 };
 
 namespace {
@@ -345,14 +346,13 @@ class DictServerWordSearchRequest: public Dictionary::WordSearchRequest
   QString errorString;
   QFuture< void > f;
   DictServerDictionary & dict;
-  QTcpSocket * socket;
+  //  QTcpSocket * socket;
 
 public:
 
   DictServerWordSearchRequest( wstring const & word_, DictServerDictionary & dict_ ):
     word( word_ ),
-    dict( dict_ ),
-    socket( 0 )
+    dict( dict_ )
   {
     f = QtConcurrent::run( [ this ]() {
       this->run();
@@ -376,53 +376,55 @@ void DictServerWordSearchRequest::run()
     return;
   }
 
-  // socket = new QTcpSocket;
 
-  // if ( !socket ) {
-  //   finish();
-  //   return;
-  // }
   asio::io_context io_context;
+  QUrl serverUrl( dict.url );
+  quint16 port = serverUrl.port( DefaultPort );
+  tcp::socket s( io_context );
+  tcp::resolver resolver( io_context );
+  asio::error_code ec;
+  QTimer::singleShot( 2000, this, [ & ]() {
+    cancel();
+  } );
+  asio::connect( s, resolver.resolve( serverUrl.host().toStdString(), std::to_string( serverUrl.port() ) ), ec );
 
-    tcp::socket s(io_context);
-    tcp::resolver resolver(io_context);
-    asio::connect(s, resolver.resolve(dict.url));
-
-
-  // if ( connectToServer( *socket, dict.url, errorString, isCancelled ) ) 
-  {
+  if ( !ec ) {
     QStringList matchesList;
 
     for ( int ns = 0; ns < dict.strategies.size(); ns++ ) {
       for ( int i = 0; i < dict.databases.size(); i++ ) {
         QString matchReq = QString( "MATCH " ) + dict.databases.at( i ) + " " + dict.strategies.at( ns ) + " \""
           + QString::fromStdU32String( word ) + "\"\r\n";
-        socket->write( matchReq.toUtf8() );
-        socket->waitForBytesWritten( 1000 );
+
+        asio::write( s, asio::buffer( matchReq.toStdString() ) );
 
         if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
           break;
 
-        QString reply;
-
-        char reply[ max_length ];
-        size_t reply_length = asio::read( s, asio::buffer( reply, max_length ) );
-        if ( reply_length==0 )
+        std::string data;
+        std::size_t n     = asio::read_until( s, asio::dynamic_buffer( data ), '\n' );
+        std::string reply = data.substr( 0, n );
+        data.erase( 0, n );
+        if ( n == 0 )
           break;
 
         if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
           break;
 
-        if ( reply.left( 3 ) == "250" ) {
+        if ( reply.substr( 0, 3 ) == "250" ) {
           // "OK" reply - matches info will be later
-          if ( !readLine( *socket, reply, errorString, isCancelled ) )
+
+          n     = asio::read_until( s, asio::dynamic_buffer( data ), '\n' );
+          reply = data.substr( 0, n );
+          data.erase( 0, n );
+          if ( n == 0 )
             break;
 
           if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
             break;
         }
 
-        if ( reply.left( 3 ) == "552" ) {
+        if ( reply.substr( 0, 3 ) == "552" ) {
           // No matches
           continue;
         }
@@ -433,40 +435,42 @@ void DictServerWordSearchRequest::run()
                      dict.getName().c_str(),
                      dict.databases.at( i ).toUtf8().data(),
                      dict.strategies.at( ns ).toUtf8().data(),
-                     reply.toUtf8().data() );
+                     reply.c_str() );
           continue;
         }
 
-        if ( reply.left( 3 ) == "152" ) {
+        if ( reply.substr( 0, 3 ) == "152" ) {
           // Matches found
-          int countPos = reply.indexOf( ' ', 4 );
+          int countPos = reply.find_first_of( ' ', 4 );
 
           // Get matches count
-          int count = reply.mid( 4, countPos > 4 ? countPos - 4 : -1 ).toInt();
+          int count = std::stoi( reply.substr( 4, countPos > 4 ? countPos - 4 : -1 ) );
 
           // Read matches
           for ( int x = 0; x <= count; x++ ) {
             if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
               break;
-
-            if ( !readLine( *socket, reply, errorString, isCancelled ) )
+            n     = asio::read_until( s, asio::dynamic_buffer( data ), '\n' );
+            reply = data.substr( 0, n );
+            data.erase( 0, n );
+            if ( n == 0 )
               break;
 
             if ( reply[ 0 ] == '.' )
               break;
 
-            while ( reply.endsWith( '\r' ) || reply.endsWith( '\n' ) )
-              reply.chop( 1 );
+            while ( reply[ n - 1 ] == ( '\r' ) || reply[ n - 1 ] == ( '\n' ) )
+              reply.pop_back();
 
-            int pos = reply.indexOf( ' ' );
+            int pos = reply.find_first_of( ' ' );
             if ( pos >= 0 ) {
-              QString word = reply.mid( pos + 1 );
-              if ( word.endsWith( '\"' ) )
-                word.chop( 1 );
+              string word = reply.substr( pos + 1 );
+              if ( word.back() == ( '\"' ) )
+                word.pop_back();
               if ( word[ 0 ] == '\"' )
-                word = word.mid( 1 );
+                word = word.substr( 1 );
 
-              matchesList.append( word );
+              matchesList.append( QString::fromStdString( word ) );
             }
           }
           if ( Utils::AtomicInt::loadAcquire( isCancelled ) || !errorString.isEmpty() )
@@ -500,13 +504,16 @@ void DictServerWordSearchRequest::run()
   if ( !errorString.isEmpty() )
     gdWarning( "Prefix find in \"%s\" fault: %s\n", dict.getName().c_str(), errorString.toUtf8().data() );
 
-  if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
-    socket->abort();
-  else
-    disconnectFromServer( *socket );
+  if ( Utils::AtomicInt::loadAcquire( isCancelled ) ) {
+    s.shutdown( asio::socket_base::shutdown_both );
+    s.close();
+  }
+  else {
+    asio::write( s, asio::buffer( "QUIT\r\n" ) );
+    s.shutdown( asio::socket_base::shutdown_both );
+    s.close();
+  }
 
-  delete socket;
-  socket = nullptr;
   if ( !Utils::AtomicInt::loadAcquire( isCancelled ) )
     finish();
 }

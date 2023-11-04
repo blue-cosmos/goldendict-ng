@@ -114,7 +114,10 @@ target_sources(${GOLDENDICT} PRIVATE
 if (NOT USE_SYSTEM_FMT)
     target_sources(${GOLDENDICT} PRIVATE thirdparty/fmt/format.cc)
 endif ()
+target_include_directories(${GOLDENDICT} PRIVATE
+        ${PROJECT_SOURCE_DIR}/thirdparty/asio/asio/include)
 
+target_sources(${GOLDENDICT} PRIVATE thirdparty/asio/asio/src)
 ### Common parts amount all platforms
 
 # Note: used as c++ string thus need surrounding " "

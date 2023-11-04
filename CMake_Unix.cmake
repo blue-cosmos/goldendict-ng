@@ -8,6 +8,7 @@ endif ()
 target_include_directories(${GOLDENDICT} PRIVATE
         ${PROJECT_SOURCE_DIR}/thirdparty)
 
+
 #### Special Platform supporting libraries
 
 if (LINUX OR BSD)
