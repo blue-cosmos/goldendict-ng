@@ -371,151 +371,157 @@ public:
 
 void DictServerWordSearchRequest::run()
 {
-  if ( Utils::AtomicInt::loadAcquire( isCancelled ) ) {
-    finish();
-    return;
-  }
+  try {
+    if ( Utils::AtomicInt::loadAcquire( isCancelled ) ) {
+      finish();
+      return;
+    }
 
 
-  asio::io_context io_context;
-  QUrl serverUrl( dict.url );
-  quint16 port = serverUrl.port( DefaultPort );
-  tcp::socket s( io_context );
-  tcp::resolver resolver( io_context );
-  asio::error_code ec;
-  QTimer::singleShot( 2000, this, [ & ]() {
-    cancel();
-  } );
-  asio::connect( s, resolver.resolve( serverUrl.host().toStdString(), std::to_string( serverUrl.port() ) ), ec );
+    asio::io_context io_context;
+    QUrl serverUrl( dict.url );
+    quint16 port = serverUrl.port( DefaultPort );
+    tcp::socket s( io_context );
+    tcp::resolver resolver( io_context );
+    asio::error_code ec;
+    QTimer::singleShot( 2000, this, [ & ]() {
+      cancel();
+    } );
+    asio::connect( s, resolver.resolve( serverUrl.host().toStdString(), std::to_string( serverUrl.port() ) ), ec );
 
-  if ( !ec ) {
-    QStringList matchesList;
+    if ( !ec ) {
+      QStringList matchesList;
 
-    for ( int ns = 0; ns < dict.strategies.size(); ns++ ) {
-      for ( int i = 0; i < dict.databases.size(); i++ ) {
-        QString matchReq = QString( "MATCH " ) + dict.databases.at( i ) + " " + dict.strategies.at( ns ) + " \""
-          + QString::fromStdU32String( word ) + "\"\r\n";
+      for ( int ns = 0; ns < dict.strategies.size(); ns++ ) {
+        for ( int i = 0; i < dict.databases.size(); i++ ) {
+          QString matchReq = QString( "MATCH " ) + dict.databases.at( i ) + " " + dict.strategies.at( ns ) + " \""
+            + QString::fromStdU32String( word ) + "\"\r\n";
 
-        asio::write( s, asio::buffer( matchReq.toStdString() ) );
+          asio::write( s, asio::buffer( matchReq.toStdString() ) );
 
-        if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
-          break;
+          if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
+            break;
 
-        std::string data;
-        std::size_t n     = asio::read_until( s, asio::dynamic_buffer( data ), '\n' );
-        std::string reply = data.substr( 0, n );
-        data.erase( 0, n );
-        if ( n == 0 )
-          break;
-
-        if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
-          break;
-
-        if ( reply.substr( 0, 3 ) == "250" ) {
-          // "OK" reply - matches info will be later
-
-          n     = asio::read_until( s, asio::dynamic_buffer( data ), '\n' );
-          reply = data.substr( 0, n );
+          std::string data;
+          std::size_t n     = asio::read_until( s, asio::dynamic_buffer( data ), '\n' );
+          std::string reply = data.substr( 0, n );
           data.erase( 0, n );
           if ( n == 0 )
             break;
 
           if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
             break;
-        }
 
-        if ( reply.substr( 0, 3 ) == "552" ) {
-          // No matches
-          continue;
-        }
+          if ( reply.substr( 0, 3 ) == "250" ) {
+            // "OK" reply - matches info will be later
 
-        if ( reply[ 0 ] == '5' || reply[ 0 ] == '4' ) {
-          // Database error
-          gdWarning( "Find matches in \"%s\", database \"%s\", strategy \"%s\" fault: %s\n",
-                     dict.getName().c_str(),
-                     dict.databases.at( i ).toUtf8().data(),
-                     dict.strategies.at( ns ).toUtf8().data(),
-                     reply.c_str() );
-          continue;
-        }
-
-        if ( reply.substr( 0, 3 ) == "152" ) {
-          // Matches found
-          int countPos = reply.find_first_of( ' ', 4 );
-
-          // Get matches count
-          int count = std::stoi( reply.substr( 4, countPos > 4 ? countPos - 4 : -1 ) );
-
-          // Read matches
-          for ( int x = 0; x <= count; x++ ) {
-            if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
-              break;
             n     = asio::read_until( s, asio::dynamic_buffer( data ), '\n' );
             reply = data.substr( 0, n );
             data.erase( 0, n );
             if ( n == 0 )
               break;
 
-            if ( reply[ 0 ] == '.' )
+            if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
               break;
-
-            while ( reply[ n - 1 ] == ( '\r' ) || reply[ n - 1 ] == ( '\n' ) )
-              reply.pop_back();
-
-            int pos = reply.find_first_of( ' ' );
-            if ( pos >= 0 ) {
-              string word = reply.substr( pos + 1 );
-              if ( word.back() == ( '\"' ) )
-                word.pop_back();
-              if ( word[ 0 ] == '\"' )
-                word = word.substr( 1 );
-
-              matchesList.append( QString::fromStdString( word ) );
-            }
           }
-          if ( Utils::AtomicInt::loadAcquire( isCancelled ) || !errorString.isEmpty() )
-            break;
+
+          if ( reply.substr( 0, 3 ) == "552" ) {
+            // No matches
+            continue;
+          }
+
+          if ( reply[ 0 ] == '5' || reply[ 0 ] == '4' ) {
+            // Database error
+            gdWarning( "Find matches in \"%s\", database \"%s\", strategy \"%s\" fault: %s\n",
+                       dict.getName().c_str(),
+                       dict.databases.at( i ).toUtf8().data(),
+                       dict.strategies.at( ns ).toUtf8().data(),
+                       reply.c_str() );
+            continue;
+          }
+
+          if ( reply.substr( 0, 3 ) == "152" ) {
+            // Matches found
+            int countPos = reply.find_first_of( ' ', 4 );
+
+            // Get matches count
+            int count = std::stoi( reply.substr( 4, countPos > 4 ? countPos - 4 : -1 ) );
+
+            // Read matches
+            for ( int x = 0; x <= count; x++ ) {
+              if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
+                break;
+              n     = asio::read_until( s, asio::dynamic_buffer( data ), '\n' );
+              reply = data.substr( 0, n );
+              data.erase( 0, n );
+              if ( n == 0 )
+                break;
+
+              if ( reply[ 0 ] == '.' )
+                break;
+
+              while ( reply[ n - 1 ] == ( '\r' ) || reply[ n - 1 ] == ( '\n' ) )
+                reply.pop_back();
+
+              int pos = reply.find_first_of( ' ' );
+              if ( pos >= 0 ) {
+                string word = reply.substr( pos + 1 );
+                if ( word.back() == ( '\"' ) )
+                  word.pop_back();
+                if ( word[ 0 ] == '\"' )
+                  word = word.substr( 1 );
+
+                matchesList.append( QString::fromStdString( word ) );
+              }
+            }
+            if ( Utils::AtomicInt::loadAcquire( isCancelled ) || !errorString.isEmpty() )
+              break;
+          }
+        }
+
+        if ( Utils::AtomicInt::loadAcquire( isCancelled ) || !errorString.isEmpty() )
+          break;
+
+        matchesList.removeDuplicates();
+        if ( matchesList.size() >= MAX_MATCHES_COUNT )
+          break;
+      }
+
+      if ( !Utils::AtomicInt::loadAcquire( isCancelled ) && errorString.isEmpty() ) {
+        matchesList.removeDuplicates();
+
+        int count = matchesList.size();
+        if ( count > MAX_MATCHES_COUNT )
+          count = MAX_MATCHES_COUNT;
+
+        if ( count ) {
+          QMutexLocker _( &dataMutex );
+          for ( int x = 0; x < count; x++ )
+            matches.emplace_back( gd::toWString( matchesList.at( x ) ) );
         }
       }
-
-      if ( Utils::AtomicInt::loadAcquire( isCancelled ) || !errorString.isEmpty() )
-        break;
-
-      matchesList.removeDuplicates();
-      if ( matchesList.size() >= MAX_MATCHES_COUNT )
-        break;
     }
 
-    if ( !Utils::AtomicInt::loadAcquire( isCancelled ) && errorString.isEmpty() ) {
-      matchesList.removeDuplicates();
+    if ( !errorString.isEmpty() )
+      gdWarning( "Prefix find in \"%s\" fault: %s\n", dict.getName().c_str(), errorString.toUtf8().data() );
 
-      int count = matchesList.size();
-      if ( count > MAX_MATCHES_COUNT )
-        count = MAX_MATCHES_COUNT;
-
-      if ( count ) {
-        QMutexLocker _( &dataMutex );
-        for ( int x = 0; x < count; x++ )
-          matches.emplace_back( gd::toWString( matchesList.at( x ) ) );
-      }
+    if ( Utils::AtomicInt::loadAcquire( isCancelled ) ) {
+      s.shutdown( asio::socket_base::shutdown_both );
+      s.close();
     }
-  }
+    else {
+      asio::write( s, asio::buffer( "QUIT\r\n" ) );
+      s.shutdown( asio::socket_base::shutdown_both );
+      s.close();
+    }
 
-  if ( !errorString.isEmpty() )
-    gdWarning( "Prefix find in \"%s\" fault: %s\n", dict.getName().c_str(), errorString.toUtf8().data() );
-
-  if ( Utils::AtomicInt::loadAcquire( isCancelled ) ) {
-    s.shutdown( asio::socket_base::shutdown_both );
-    s.close();
+    if ( !Utils::AtomicInt::loadAcquire( isCancelled ) )
+      finish();
   }
-  else {
-    asio::write( s, asio::buffer( "QUIT\r\n" ) );
-    s.shutdown( asio::socket_base::shutdown_both );
-    s.close();
-  }
-
-  if ( !Utils::AtomicInt::loadAcquire( isCancelled ) )
+  catch ( std::exception & ex ) {
+    qDebug() << ex.what();
     finish();
+  }
 }
 
 void DictServerWordSearchRequest::cancel()
