@@ -154,6 +154,100 @@ bool connectToServer( QTcpSocket & socket, QString const & url, QString & errorS
   return false;
 }
 
+bool connectToServer( tcp::socket & socket, QString const & url, QString & errorString, QAtomicInt & isCancelled )
+{
+  QUrl serverUrl( url );
+  quint16 port = serverUrl.port( DefaultPort );
+  std::string reply;
+
+  for ( ;; ) {
+    if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
+      return false;
+
+    std::string data;
+    std::size_t n = asio::read_until( socket, asio::dynamic_buffer( data ), '\n' );
+    reply         = data.substr( 0, n );
+    data.erase( 0, n );
+
+    if ( n == 0 )
+      break;
+
+    if ( reply.substr( 0, 3 ) != "220" ) {
+      errorString = QString( "Server refuse connection: " ) + reply.c_str();
+      return false;
+    }
+
+    string msgId = reply.substr( reply.find_last_of( ' ' ) );
+
+    asio::write( socket, asio::buffer( "CLIENT GoldenDict\r\n" ) );
+
+
+    if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
+      return false;
+    n     = asio::read_until( socket, asio::dynamic_buffer( data ), '\n' );
+    reply = data.substr( 0, n );
+    data.erase( 0, n );
+    if ( n == 0 )
+      break;
+
+    if ( !serverUrl.userInfo().isEmpty() ) {
+      QString authCommand = QString( "AUTH " );
+      QString authString  = QString::fromStdString( msgId );
+
+      int pos = serverUrl.userInfo().indexOf( QRegularExpression( "[:;]" ) );
+      if ( pos > 0 ) {
+        authCommand += serverUrl.userInfo().left( pos );
+        authString += serverUrl.userInfo().mid( pos + 1 );
+      }
+      else
+        authCommand += serverUrl.userInfo();
+
+      authCommand += " ";
+      authCommand += QCryptographicHash::hash( authString.toUtf8(), QCryptographicHash::Md5 ).toHex();
+      authCommand += "\r\n";
+      asio::write( socket, asio::buffer( authCommand.toUtf8() ) );
+
+
+      if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
+        return false;
+      n     = asio::read_until( socket, asio::dynamic_buffer( data ), '\n' );
+      reply = data.substr( 0, n );
+      data.erase( 0, n );
+      if ( n == 0 )
+        break;
+
+      if ( reply.substr( 0, 3 ) != "230" ) {
+        errorString = QString( "Authentication error: " ) + reply.c_str();
+        return false;
+      }
+    }
+    //    asio::write(socket, asio::buffer( "OPTION MIME\r\n"   ) );
+    //
+    //
+    //    if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
+    //      return false;
+    //    n     = asio::read_until( socket, asio::dynamic_buffer( data ), '\n' );
+    //    reply = data.substr( 0, n );
+    //    data.erase( 0, n );
+    //    if ( n==0 )
+    //      break;
+    //
+    //    if ( reply.substr(0, 3 ) != "250" ) {
+    //      // RFC 2229, 3.10.1.1:
+    //      // OPTION MIME is a REQUIRED server capability,
+    //      // all DICT servers MUST implement this command.
+    //      errorString = QString("Server doesn't support mime capability: ") + reply.c_str();
+    //      return false;
+    //    }
+
+    return true;
+  }
+
+  if ( !Utils::AtomicInt::loadAcquire( isCancelled ) )
+    errorString = QString( "Server connection fault, socket error " );
+  return false;
+}
+
 void disconnectFromServer( QTcpSocket & socket )
 {
   if ( socket.state() == QTcpSocket::ConnectedState )
@@ -384,20 +478,23 @@ void DictServerWordSearchRequest::run()
     tcp::socket s( io_context );
     tcp::resolver resolver( io_context );
     asio::error_code ec;
-    QTimer::singleShot( 2000, this, [ & ]() {
-      cancel();
-    } );
-    asio::connect( s, resolver.resolve( serverUrl.host().toStdString(), std::to_string( serverUrl.port() ) ), ec );
+    //    QTimer::singleShot( 2000, this, [ & ]() {
+    //      cancel();
+    //    } );
+    asio::connect( s, resolver.resolve( serverUrl.host().toStdString(), std::to_string( port ) ), ec );
 
     if ( !ec ) {
+      connectToServer( s, dict.url, errorString, isCancelled );
+
       QStringList matchesList;
 
       for ( int ns = 0; ns < dict.strategies.size(); ns++ ) {
         for ( int i = 0; i < dict.databases.size(); i++ ) {
-          QString matchReq = QString( "MATCH " ) + dict.databases.at( i ) + " " + dict.strategies.at( ns ) + " \""
-            + QString::fromStdU32String( word ) + "\"\r\n";
+          QString matchReq = QString( "MATCH " ) + dict.databases.at( i ) + " " + dict.strategies.at( ns ) + " "
+            + QString::fromStdU32String( word ) + "\r\n";
 
-          asio::write( s, asio::buffer( matchReq.toStdString() ) );
+          qDebug() << "write:" << matchReq;
+          asio::write( s, asio::buffer( "MATCH wn prefix s\r\n" ) );
 
           if ( Utils::AtomicInt::loadAcquire( isCancelled ) )
             break;
